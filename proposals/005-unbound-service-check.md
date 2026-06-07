@@ -54,10 +54,24 @@ small — remove ~8 lines, replace with ~4, delete one config line.
 
 None. No security impact. The Unbound config change (removing a redundant entry) does not change behavior.
 
+## Clarifications (resolved 2026-06-07)
+
+**Severity on startup failure:** Hard error (exit 1). All DNS goes through Unbound; a failed start leaves Pi-hole with no resolver, which means the stack is silently broken. Failing loudly surfaces the problem in cloud-init logs where the operator can see it.
+
+```bash
+if ! systemctl is-active --quiet unbound; then
+    echo "ERROR: Unbound failed to start. Check 'systemctl status unbound'."
+    exit 1
+fi
+echo "Unbound is running."
+```
+
+**Sleep removal:** `systemctl restart unbound` already waits for the service to reach its active state before returning. No sleep is needed. The `systemctl is-active` check immediately after is sufficient to confirm the service is up.
+
 ## Decision (human fills this in)
 
-- [ ] promote to spec
+- [x] promote to spec
 - [ ] defer
 - [ ] decline
 
-Notes:
+Notes: Promoted to specs/002-unbound-service-check.md.

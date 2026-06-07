@@ -42,10 +42,21 @@ small — 8-line deletion, no logic change.
 
 None. No secrets, no security impact.
 
+## Clarifications (resolved 2026-06-07)
+
+**Inline comment:** Leave a short TODO comment in `main.pkr.hcl` at the deletion site so a reader knows the feature was considered and where to find the rationale:
+
+```hcl
+# TODO: per-build WG_PORT and client-count customization requires environment_vars
+# plumbing in the provisioner blocks. See proposals/ to promote when needed.
+```
+
+**Comment placement:** Immediately before the `source "digitalocean" "bookworm"` block, where the variables currently appear.
+
 ## Decision (human fills this in)
 
-- [ ] promote to spec
+- [x] promote to spec
 - [ ] defer
 - [ ] decline
 
-Notes:
+Notes: Promoted to specs/003-remove-dead-packer-vars.md.

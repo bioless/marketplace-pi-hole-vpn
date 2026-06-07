@@ -47,10 +47,25 @@ small — remove ~15 lines and change two `|| true` to `|| { ...; exit 1; }` pat
 
 Admin UI binds to wg0 only. This proposal strengthens enforcement of that invariant by surfacing a failure rather than silently allowing a misconfigured state.
 
+## Clarifications (resolved 2026-06-07)
+
+**Post-set verification:** After `pihole-FTL --config webserver.port` succeeds, grep pihole.toml for the expected binding string to confirm the value was written. This catches a silent config-write failure without re-introducing the awk fallback. If the grep fails, exit 1.
+
+```bash
+pihole-FTL --config webserver.port "${WEB_BIND}" \
+    || { echo "ERROR: pihole-FTL --config webserver.port failed"; exit 1; }
+grep -q "${WG_IP}:8080" /etc/pihole/pihole.toml \
+    || { echo "ERROR: webserver binding not found in pihole.toml after setting"; exit 1; }
+```
+
+**dns.upstreams:** Also a hard error (exit 1 on failure). Only `dns.queryLogging` remains a soft failure.
+
+**Restart block:** Keep the existing restart logic (`systemctl restart pihole-FTL || systemctl restart pihole`) as-is after config changes.
+
 ## Decision (human fills this in)
 
-- [ ] promote to spec
+- [x] promote to spec
 - [ ] defer
 - [ ] decline
 
-Notes:
+Notes: Promoted to specs/001-pihole-binding-hard-fail.md.
