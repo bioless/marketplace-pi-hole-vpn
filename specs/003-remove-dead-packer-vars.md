@@ -1,6 +1,6 @@
 # Spec: Remove dead Packer variables
 
-Status: ready
+Status: done
 Owner: you
 Related: proposals/006-remove-dead-packer-vars.md
 

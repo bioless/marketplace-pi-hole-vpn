@@ -12,18 +12,8 @@ variable "do_token" {
   sensitive = true
 }
 
-# Number of WireGuard client configs to pre-generate (shown in motd on first boot)
-variable "wg_client_count" {
-  type    = number
-  default = 1
-}
-
-# WireGuard listen port. Default 51820. Alternatives: 443 (UDP), 53 (UDP).
-variable "wg_port" {
-  type    = number
-  default = 51820
-}
-
+# TODO: per-build WG_PORT and client-count customization requires environment_vars
+# plumbing in the provisioner blocks. See proposals/ to promote when needed.
 source "digitalocean" "bookworm" {
   api_token     = var.do_token
   droplet_agent = false
