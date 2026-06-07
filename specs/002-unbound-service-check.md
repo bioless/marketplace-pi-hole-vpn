@@ -103,8 +103,23 @@ Feature-specific checks:
 
 ## Task checklist
 
-1. [ ] In the Unbound config heredoc, delete the `private-address: fd00::/8` line
-2. [ ] In STEP 3, delete `sleep 2`
-3. [ ] In STEP 3, replace the drill/dig `if/else` block with the `systemctl is-active --quiet unbound` check and `exit 1` on failure
-4. [ ] Run `./validate.sh`, reach exit 0
-5. [ ] Run the feature-specific grep checks above
+All changes are in `scripts/unbound-setup.sh`. Steps 1 and 2-3 touch different sections (heredoc vs STEP 3) of the same file; edit in order to avoid offset confusion.
+
+1. [ ] `scripts/unbound-setup.sh` line 74 (inside the heredoc for `/etc/unbound/unbound.conf.d/pi-hole.conf`): delete the `    private-address: fd00::/8` line
+2. [ ] `scripts/unbound-setup.sh` STEP 3 (~lines 90-91): delete the `# Give Unbound a moment to start and load root hints` comment and the `sleep 2` line immediately below it
+3. [ ] `scripts/unbound-setup.sh` STEP 3 (~lines 92-97 after prior edits): replace the full drill/dig `if/else` block with:
+   ```bash
+   if ! systemctl is-active --quiet unbound; then
+       echo "ERROR: Unbound failed to start. Check 'systemctl status unbound'."
+       exit 1
+   fi
+   echo "Unbound is running."
+   ```
+4. [ ] Run `shellcheck -x scripts/unbound-setup.sh`, reach exit 0
+5. [ ] Run `./validate.sh`, reach exit 0
+6. [ ] Feature checks:
+   - `grep -c 'sleep' scripts/unbound-setup.sh` → `0`
+   - `grep -c 'drill\|dig' scripts/unbound-setup.sh` → `0`
+   - `grep 'fd00::/8' scripts/unbound-setup.sh` → no output
+   - `grep 'systemctl is-active.*unbound' scripts/unbound-setup.sh` → one matching line
+   - `grep 'exit 1' scripts/unbound-setup.sh` → at least one matching line

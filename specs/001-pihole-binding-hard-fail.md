@@ -97,10 +97,15 @@ Feature-specific checks:
 
 ## Task checklist
 
-1. [ ] Remove `2>/dev/null` and the `|| echo "Warning..."` pattern from the `webserver.port` call; replace with `|| { echo "ERROR: ..."; exit 1; }`
-2. [ ] Add `grep -q "${WG_IP}:8080" /etc/pihole/pihole.toml || { echo "ERROR: ..."; exit 1; }` immediately after the `webserver.port` call
-3. [ ] Remove `2>/dev/null` from the `dns.upstreams` call; change `|| true` to `|| { echo "ERROR: ..."; exit 1; }`
-4. [ ] Delete the 12-line awk fallback block (`if [[ -f /etc/pihole/pihole.toml ]]; then ... fi`)
-5. [ ] Run `./validate.sh`, reach exit 0
-6. [ ] Run the feature-specific grep checks above
-7. [ ] Update README.md if any user-facing setup behavior changed (none expected)
+All changes are in `scripts/pihole-setup.sh` STEP 2 (lines 59-89). Steps are sequential: each edit shifts line numbers for the next.
+
+1. [ ] `scripts/pihole-setup.sh` line 60-61: remove `2>/dev/null` from the `webserver.port` call and replace `|| echo "Warning: pihole-FTL --config not available; falling back to direct config edit"` with `|| { echo "ERROR: pihole-FTL --config webserver.port failed"; exit 1; }`
+2. [ ] `scripts/pihole-setup.sh` immediately after the `webserver.port` call (now line ~62): add `grep -q "${WG_IP}:8080" /etc/pihole/pihole.toml || { echo "ERROR: webserver.port binding absent from pihole.toml after setting"; exit 1; }`
+3. [ ] `scripts/pihole-setup.sh` `dns.upstreams` call (~line 68 after prior edits): remove `2>/dev/null` and change `|| true` to `|| { echo "ERROR: pihole-FTL --config dns.upstreams failed"; exit 1; }`
+4. [ ] `scripts/pihole-setup.sh`: delete the entire awk fallback block — the `# Fallback: if pihole-FTL --config...` comment plus the `if [[ -f /etc/pihole/pihole.toml ]]; then ... fi` block (currently lines 71-82)
+5. [ ] Run `shellcheck -x scripts/pihole-setup.sh`, reach exit 0
+6. [ ] Run `./validate.sh`, reach exit 0
+7. [ ] Feature checks:
+   - `grep -c 'awk' scripts/pihole-setup.sh` → `0`
+   - `grep 'exit 1' scripts/pihole-setup.sh` → at least two lines (webserver.port and dns.upstreams)
+   - `grep 'grep -q.*8080.*pihole.toml' scripts/pihole-setup.sh` → one matching line

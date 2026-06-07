@@ -78,8 +78,17 @@ Feature-specific checks:
 
 ## Task checklist
 
-1. [ ] Delete the `wg_client_count` comment and variable block from `main.pkr.hcl`
-2. [ ] Delete the `wg_port` comment and variable block from `main.pkr.hcl`
-3. [ ] Add the 2-line TODO comment before the `source "digitalocean" "bookworm"` block
+All changes are in `main.pkr.hcl`. Steps 1-3 are sequential in the same file; combine into one edit to avoid offset drift between passes.
+
+1. [ ] `main.pkr.hcl` lines 15-19: delete the `# Number of WireGuard client configs...` comment and the entire `variable "wg_client_count"` block (5 lines including the blank line before the next block)
+2. [ ] `main.pkr.hcl` lines 21-25 (after step 1 renumbers them): delete the `# WireGuard listen port...` comment and the entire `variable "wg_port"` block
+3. [ ] `main.pkr.hcl`: in place of the deleted blocks, add the 2-line TODO comment immediately before `source "digitalocean" "bookworm" {`:
+   ```hcl
+   # TODO: per-build WG_PORT and client-count customization requires environment_vars
+   # plumbing in the provisioner blocks. See proposals/ to promote when needed.
+   source "digitalocean" "bookworm" {
+   ```
 4. [ ] Run `./validate.sh`, reach exit 0
-5. [ ] Run the feature-specific grep checks above
+5. [ ] Feature checks:
+   - `grep 'variable "wg_client_count"\|variable "wg_port"' main.pkr.hcl` → no output
+   - `grep 'TODO.*WG_PORT' main.pkr.hcl` → one matching line
