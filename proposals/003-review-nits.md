@@ -33,6 +33,8 @@ private-address: fd00::/8
 
 **Effort:** small.
 
+**Note:** Nits 2 and 3 are better addressed together. The optimal path — replacing the entire `sleep` + drill/dig block with `systemctl is-active --quiet unbound` — eliminates both issues in fewer lines. See proposal 005.
+
 ---
 
 ## Nit 3: DNS verification warning fires when drill/dig not installed
@@ -56,6 +58,8 @@ Fix: check for command availability before running the test, or install `dnsutil
 
 **Effort:** small.
 
+**Note:** See proposal 005 for the combined fix that addresses Nits 2 and 3 together.
+
 ---
 
 ## Invariants touched
@@ -66,6 +70,6 @@ None. All three are cosmetic or reliability nits with no security impact.
 
 - [ ] promote to spec
 - [ ] defer
-- [ ] decline
+- [x] decline
 
-Notes:
+Notes: Nit 1 (redundant fd00::/8) and Nits 2+3 (sleep + drill/dig verification) are addressed together in proposal 005 with a simpler approach than what is described here. This proposal is superseded by 005.

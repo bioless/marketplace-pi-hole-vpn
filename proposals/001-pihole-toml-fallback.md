@@ -50,6 +50,6 @@ Admin UI binds to wg0 only. This proposal strengthens the application-level enfo
 
 - [ ] promote to spec
 - [ ] defer
-- [ ] decline
+- [x] decline
 
-Notes:
+Notes: The awk approach adds complexity to maintain an edge case that should not occur with a correctly installed Pi-hole v6. The optimal path is simpler: remove the awk fallback entirely and make `pihole-FTL --config` failure a hard error. If the v6 CLI is absent, the installation is broken in a way no awk rewrite can fix. The ufw rule continues to provide network-level defense-in-depth in the meantime. See proposal 004 for the recommended implementation.
