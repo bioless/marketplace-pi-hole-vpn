@@ -1,163 +1,270 @@
-# Pi-hole VPN [Beta]
+# Pi-hole VPN
 
-Pi-hole VPN image with Unbound and Wireguard
+A hardened, privacy-focused VPN with built-in ad blocking.
 
-In otherwords, an on-demand VPN, that you own and manage, with
-it's own recursive DNS server, so you don't have to rely on an
-upstream server like OpenDNS, Cloudflare, or Google, with ad
-blocking built in.
+**Stack:** Pi-hole v6 (ad blocking) + WireGuard (VPN) + Unbound (recursive DNS)
 
-Cool, cool cool cool...so how do I...
+**OS:** Debian 12 (Bookworm)
 
-## Use It
+No upstream DNS servers. All DNS resolves locally via Unbound, then filters
+through Pi-hole. Full-tunnel mode routes all traffic through the VPN.
 
-If you want to get up and running in as little time as possible:
+---
 
-1. Go [here](https://marketplace.digitalocean.com/apps/pi-hole-vpn), create a Droplet, and SSH in \[[video guide](https://www.youtube.com/watch?v=n-rL02390AI)]
-2. Scan the QR code(s) presented from the [WireGuard
-   App](https://www.wireguard.com/install/) \[[video guide](https://www.youtube.com/watch?v=0N_N-NpHIB4)]
-3. Profit
+## Quick Start
 
-Slightly more info:
+1. Create a Droplet from the marketplace image (or build your own with Packer)
+2. SSH in: `ssh root@<droplet-ip>`
+3. Wait for first-boot setup to complete (2-5 minutes; progress visible in `/var/log/cloud-init-output.log`)
+4. Scan the QR codes shown in the terminal from the [WireGuard app](https://www.wireguard.com/install/)
+5. Connect and browse
 
-* This image was built using a $4 Droplet, and it should
-(🤞) work just fine on one
-* First boot setup takes a bit of time
-    - Why? On first boot, the OS is updated. Then, WireGuard,
-      Pi-hole, & Unbound are installed.
-* When you SSH in, you'll be promted with a pair of QR codes to
-  scan (I recommend scanning both):
-    - one for a DNS only VPN client configuration
-    - one for a Full VPN client configuration
-* The README in the Droplet provides info on multiple clients,
-  alternative ports, and more
-* Using Floating / Reserved IPs:
-    - Create your Droplet
-    - Assign your Reserved IP to the Droplet
-    - SSH in and scan the QR code
-    - Replace the Droplet IP with the Reserved IP in the config
+**Admin UI** (connect to VPN first): `http://10.2.53.1:8080/admin`
 
+**Admin password** is in `/root/.pihole-admin-pass` on the Droplet (auto-generated at first boot).
 
-## Contribute Changes
+---
 
-### Create the Pi-hole VPN Image
+## VPN Modes
 
-First, generate an `API_TOKEN` on the [API
-page](https://cloud.digitalocean.com/account/api/tokens). Then,
-create a vars file:
+Two configs are generated per client:
 
-    echo 'do_token = "API_TOKEN"' > variables.auto.pkrvars.hcl
+| Mode | AllowedIPs | Use When |
+| --- | --- | --- |
+| **DNS Only** | `10.2.53.1/32, fc10:253::1/128` | Trusted network, only need ad blocking |
+| **Full VPN** | `0.0.0.0/0, ::/0` | Untrusted network, full privacy |
 
-Finally, validate and build the image:
+Full VPN routes all IPv4 and IPv6 traffic through the tunnel, preventing DNS leaks
+and masking your IP. Recommended for untrusted networks (hotels, airports, coffee shops).
 
-    packer init .
-    packer validate .
-    packer build .
+---
 
-### Provision Droplets for Testing
+## Security Hardening
 
-The recommended way to provision droplets for testing is by using
-terraform.
+| Area | What Is Applied |
+| --- | --- |
+| SSH | Key-only auth (`PasswordAuthentication no`), root with key only (`PermitRootLogin prohibit-password`), 10-min idle timeout, restricted ciphers |
+| Firewall | ufw default-deny inbound; only SSH (22/tcp) and WireGuard (UDP) allowed from public |
+| Pi-hole admin | Bound to WireGuard interface (`10.2.53.1:8080`) only; not reachable from public internet |
+| DNS | Unbound hides version and identity; DNSSEC validation; no external resolver |
+| Brute force | fail2ban: 5 failures within 10 min = 1-hour ban |
+| Auto-updates | `unattended-upgrades` applies security patches automatically |
+| sysctl | Source routing disabled, ICMP redirects disabled, SYN cookies enabled, log martians |
+| WireGuard | Per-peer pre-shared key (PSK) for quantum resistance |
 
-Use Cases:
-1. You created an image by following the steps in the [Create the
-   Pi-hole VPN Image](#create-the-pi-hole-vpn-image) section above
-   and you would like to now create a Droplet using that image.
-2. You want to create a Droplet using the image that the packer
-   build is based off of so you can test the build scripts in a
-   clean environment.
+---
 
-#### Terraform Configuration
+## WireGuard Configuration
 
+### Default port
 
-First, we need to create a vars file:
+Port: **51820/UDP**
 
-    cd terraform
-    echo 'do_token = "API_TOKEN"' > terraform.auto.tfvars
-    echo 'image    = "IMAGE_ID"' >> terraform.auto.tfvars
-    echo 'ssh_keys = [SSH_ID]'   >> terraform.auto.tfvars
-    
-_NB: the square brackets `[]` around `SSH_ID` are required._
+If 51820 is blocked, alternative ports can be used. Set `WG_PORT` before running `regen-vpn-keys.sh`:
 
-Now that we have a template, let's grab the required information:
+```bash
+WG_PORT=443 /root/regen-vpn-keys.sh
+```
 
-**API_TOKEN:** use the API_TOKEN that you generated in the [Create
-the Pi-hole VPN Image](#create-the-pi-hole-vpn-image) section
-above.
+| Port | Notes |
+| --- | --- |
+| 51820 | WireGuard default |
+| 443/UDP | Blends with HTTPS; widely open on restrictive networks |
+| 53/UDP | Last resort; may break DNS on some networks |
 
-**IMAGE_ID:** the `IMAGE_ID` you use here depends on the use case
-(listed [above](#provision-droplets-for-testing))
+### Multiple clients
 
-1. For use case 1, the `IMAGE_ID` is a string of numbers output by
-   the Packer build process.
-2. For use case 2, the `IMAGE_ID` is `debian-11-x64`
+```bash
+# Generate configs for 3 clients
+/root/regen-vpn-keys.sh 3
+```
 
-Alternatively:
+WARNING: Regenerating keys invalidates all existing client configs. All clients must re-scan.
 
-* Find the `IMAGE_ID` in the URL (`imageId=` for Snapshots,
-  `distroImage=` for Distributions) of the [Create Droplets
-  page](https://cloud.digitalocean.com/droplets/new) after
-  selecting the desired image in the "Snapshots" tab.
-* Acquire the `IMAGE_ID` from the API:
+### Add a single peer without regenerating all keys
 
-    - Distributions
+```bash
+/root/add-vpn-peer.sh [peer-name]
+```
 
-            curl -s -X GET \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer API_TOKEN" \
-            "https://api.digitalocean.com/v2/images?type=distribution" | \
-            jq -r '.images | .[] | [.id, .name] | @tsv'
+The new peer is added to the running WireGuard interface. No restart required.
 
-    - Snapshots
+---
 
-            curl -s -X GET \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer API_TOKEN" \
-            "https://api.digitalocean.com/v2/images?private=true" | \
-            jq -r '.images | .[] | [.id, .name] | @tsv'
+## DNS Architecture
 
-**SSH_ID:** DO's ID for your SSH public key. You can obtain the
-`SSH_ID` for any previously added keys (i.e. any public keys
-added via the API or via the [Settings -> Security
-page](https://cloud.digitalocean.com/account/security)) with the
-following query:
+```
+Client device
+    |
+    | (DNS query via WireGuard tunnel)
+    v
+Pi-hole (10.2.53.1:53)
+    |
+    | (filtered query — blocks known ad/tracker domains)
+    v
+Unbound (127.0.0.1:5335)
+    |
+    | (recursive resolution — walks the DNS tree)
+    v
+Root nameservers → TLD nameservers → authoritative nameservers
+```
 
-        curl -s -X GET \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer API_TOKEN" \
-        "https://api.digitalocean.com/v2/account/keys" | \
-        jq -r '.ssh_keys | .[] | [.name, .id] | @tsv'
+No external resolver is involved. Pi-hole blocks known ad and tracker domains.
+Unbound resolves everything else directly from the root.
 
-If you haven't yet added a key, you can use the query below to
-upload your SSH public key and get its `SSH_ID`:
+DNSSEC validation is enabled at both Pi-hole and Unbound layers.
 
-      curl -X POST \
-      -H "Content-Type: application/json" \
-      -H "Authorization: Bearer API_TOKEN" \
-      -d "{\"name\":\"Pi-hole Key\",\"public_key\":\"$(cat ~/.ssh/id_rsa.pub)\"}" \
-      "https://api.digitalocean.com/v2/account/keys"
+---
 
+## IPv6 Leak Prevention
 
+Full VPN mode includes `AllowedIPs = 0.0.0.0/0, ::/0`, which routes all IPv6
+traffic through the tunnel. This prevents IPv6 leaks on networks where both
+IPv4 and IPv6 are available.
 
-#### Terraform Use
+**Client-side:** Confirm your WireGuard app uses `AllowedIPs = 0.0.0.0/0, ::/0`
+for the full-tunnel config.
 
-If you don't already have Terraform installed, checkout
-Terraform's [installation page
-](https://learn.hashicorp.com/tutorials/terraform/install-cli).
-The terraform code requires version 1.2.0 or later.
+**Browser:** To prevent WebRTC leaks in Firefox:
+- Open `about:config`
+- Set `media.peerconnection.enabled = false`
 
-Make sure you've setup your vars file as described in the previous
-section. Then:
+Or use uBlock Origin with the "Prevent WebRTC from leaking local IP addresses"
+option enabled (uBlock Origin → Settings → Privacy).
 
-    terraform init
-    terraform validate
-    terraform plan
-    terraform apply
+---
 
-You may use `terraform show` to see your Droplet's IP address:
+## Fingerprint Reduction
 
-    terraform show
+| Technique | Status |
+| --- | --- |
+| Local recursive DNS (no 8.8.8.8) | Applied |
+| Full-tunnel IPv4+IPv6 | Applied |
+| Unbound hides version/identity | Applied |
+| Neutral Droplet hostname | Applied |
+| Per-peer PSK (post-quantum layer) | Applied |
+| Non-default WireGuard port | Optional (set `WG_PORT`) |
+| WireGuard obfuscation (udp2raw, AmneziaWG) | Not applied (see proposals/) |
 
-Finally, to destroy your Droplet:
+Standard WireGuard handshakes are identifiable by DPI in some environments.
+If DPI-based blocking is a concern, see `proposals/` for the AmneziaWG spec candidate.
 
-    terraform destroy
+---
+
+## Building the Image
+
+### Prerequisites
+
+- [Packer](https://developer.hashicorp.com/packer/install) >= 1.9
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.3
+- A DigitalOcean API token
+
+### Validate scripts locally
+
+```bash
+./validate.sh
+```
+
+Requires `shellcheck` (`apt-get install shellcheck`).
+
+### Build the Packer snapshot
+
+```bash
+packer init .
+DO_PAT=<your-api-token> ./validate.sh  # also runs packer validate
+packer build -var "do_token=<your-api-token>" main.pkr.hcl
+```
+
+Note the snapshot ID from the output (e.g., `marketplace-pi-hole-vpn-1234567890`).
+
+### Provision a Droplet with Terraform
+
+```bash
+cd terraform
+cat <<EOF > terraform.auto.tfvars
+do_token = "<your-api-token>"
+image    = "<snapshot-id>"
+ssh_keys = [<your-ssh-key-id>]
+EOF
+terraform init
+terraform apply
+terraform output droplet_ipv4
+```
+
+Get your SSH key ID:
+```bash
+curl -s -H "Authorization: Bearer <token>" \
+    "https://api.digitalocean.com/v2/account/keys" | \
+    jq -r '.ssh_keys[] | [.name, .id] | @tsv'
+```
+
+Get snapshot IDs:
+```bash
+curl -s -H "Authorization: Bearer <token>" \
+    "https://api.digitalocean.com/v2/images?private=true" | \
+    jq -r '.images[] | [.id, .name] | @tsv'
+```
+
+---
+
+## Droplet Management
+
+### Key rotation
+
+```bash
+# Rotate ALL WireGuard keys (server + all clients)
+# All clients must re-scan after this.
+/root/regen-vpn-keys.sh [num-clients]
+```
+
+### Pi-hole updates
+
+```bash
+pihole updatePihole
+```
+
+### System updates
+
+```bash
+apt update && apt upgrade
+# Security patches apply automatically via unattended-upgrades.
+```
+
+### Check VPN status
+
+```bash
+wg show
+```
+
+### View Pi-hole logs
+
+```bash
+# Pi-hole v6 uses pihole-FTL
+journalctl -u pihole-FTL -f
+```
+
+---
+
+## Notes on Droplet Backups
+
+If DigitalOcean backups are enabled, snapshots contain the WireGuard private key.
+Options:
+- Disable backups and rely on the key rotation script instead.
+- If a backup is compromised, run `/root/regen-vpn-keys.sh` to rotate all keys.
+
+---
+
+## Development
+
+See `CLAUDE.md` for the development workflow, conventions, and invariants.
+
+```bash
+# Run quality checks before committing
+./validate.sh
+
+# Propose an improvement
+/suggest
+
+# View the workflow
+/workflow
+```

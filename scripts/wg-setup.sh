@@ -1,235 +1,243 @@
 #!/bin/bash
+# wg-setup.sh — WireGuard VPN installation, key generation, and QR code setup
+#
+# Called in two modes:
+#   1. Install mode (this file's own name): full install + first-boot config
+#   2. Regen mode (called as regen-vpn-keys.sh): regenerate keys and configs only
+#
+# Port configuration:
+#   WG_PORT env var controls the listen port (default: 51820).
+#   Alternatives for restrictive networks:
+#     443/UDP  — blends with HTTPS traffic
+#     53/UDP   — blends with DNS (not recommended; breaks outbound DNS)
+#   Set WG_PORT before running: WG_PORT=443 /root/regen-vpn-keys.sh
 
-# Copyright 2022 The marketplace-pi-hole-vpn Authors All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#     http://www.apache.org/licenses/LICENSE-2.0
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+set -euo pipefail
 
-wg_conf () {
-    nconfs="${1:-1}"
-    print_conf="${2:-true}"
-    server_ip="$(ip -6 a s scope global eth0 | grep 'inet6 ' | awk -F'[ \t/]+' '{print $3}')"
-    if [ -n "${server_ip}" ]
-    then
+export DEBIAN_FRONTEND=noninteractive
+
+# WireGuard listen port — default 51820, configurable via environment
+WG_PORT="${WG_PORT:-51820}"
+
+# WireGuard server address space
+WG_SERVER_IPV4="10.2.53.1"
+WG_SERVER_IPV6="fc10:253::1"
+WG_NET_IPV6="fc10:253::/32"
+
+# iptables interface for masquerade — the public-facing interface
+ETH_IFACE="${ETH_IFACE:-eth0}"
+
+# -----------------------------------------------------------------------
+# wg_conf: generate WireGuard server and client configurations
+#   $1: number of client configs to generate (default: 1)
+#   $2: print full config text (true/false, default: true)
+# -----------------------------------------------------------------------
+wg_conf() {
+    local nconfs="${1:-1}"
+    local print_conf="${2:-true}"
+
+    # Prefer IPv6 public address; fall back to IPv4 if unavailable.
+    local server_ip
+    server_ip="$(ip -6 a s scope global "${ETH_IFACE}" \
+        | grep 'inet6 ' \
+        | awk -F'[ \t/]+' '{print $3}' \
+        | head -1)"
+    if [[ -n "${server_ip}" ]]; then
         server_ip="[${server_ip}]"
     else
-        server_ip="$(ip -4 a s scope global eth0 | grep 'inet ' | grep -v 'inet 10\.' | awk -F'[ \t/]+' '{print $3}')"
+        server_ip="$(ip -4 a s scope global "${ETH_IFACE}" \
+            | grep 'inet ' \
+            | grep -v 'inet 10\.' \
+            | awk -F'[ \t/]+' '{print $3}' \
+            | head -1)"
     fi
+
+    # Generate server keypair
+    local pvk spbk
     pvk="$(wg genkey)"
     spbk="$(echo -n "${pvk}" | wg pubkey)"
+
+    # Build server config with PostUp/PreDown masquerade hooks.
+    # PostUp adds iptables rules when wg0 comes up; PreDown removes them.
+    local wg0_conf
     wg0_conf="[Interface]
-Address = 10.2.53.1/24, fc10:253::1/32
-ListenPort = 51820
+Address = ${WG_SERVER_IPV4}/24, ${WG_SERVER_IPV6}/32
+ListenPort = ${WG_PORT}
 PrivateKey = ${pvk}
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o ${ETH_IFACE} -j MASQUERADE; ip6tables -A FORWARD -i %i -j ACCEPT; ip6tables -t nat -A POSTROUTING -o ${ETH_IFACE} -j MASQUERADE
+PreDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o ${ETH_IFACE} -j MASQUERADE; ip6tables -D FORWARD -i %i -j ACCEPT; ip6tables -t nat -D POSTROUTING -o ${ETH_IFACE} -j MASQUERADE
 "
-    output=""
-    for i in $(seq "${nconfs}")
-    do
-        pvk="$(wg genkey)"
-        cpbk="$(echo -n "${pvk}" | wg pubkey)"
+
+    local output=""
+    local i
+    for i in $(seq "${nconfs}"); do
+        # Generate per-client keypair and pre-shared key (PSK).
+        # PSK provides an additional symmetric encryption layer, protecting
+        # against quantum computing attacks on the key exchange.
+        local cpvk cpbk psk
+        cpvk="$(wg genkey)"
+        cpbk="$(echo -n "${cpvk}" | wg pubkey)"
         psk="$(wg genpsk)"
-        addrs="10.2.53.$((i+1))/32, fc10:253::$((i+1))/128"
-        conf="\
-[Interface]
-Address = ${addrs}
-DNS = 10.2.53.1, fc10:253::1
-PrivateKey = ${pvk}
+
+        local addrs="${WG_SERVER_IPV4%.*}.$((i+1))/32, ${WG_SERVER_IPV6%::*}::$((i+1))/128"
+
+        # Base client config (shared between DNS-only and full-tunnel variants)
+        local base_conf
+        base_conf="[Interface]
+Address = ${WG_SERVER_IPV4%.*}.$((i+1))/32, ${WG_SERVER_IPV6%::*}::$((i+1))/128
+DNS = ${WG_SERVER_IPV4}, ${WG_SERVER_IPV6}
+PrivateKey = ${cpvk}
 
 [Peer]
-Endpoint = ${server_ip}:51820
+Endpoint = ${server_ip}:${WG_PORT}
 PersistentKeepalive = 25
 PublicKey = ${spbk}
 PresharedKey = ${psk}"
-        dns_only="\
-${conf}
-AllowedIPs = 10.2.53.1/32, fc10:253::1/128"
-        full_vpn="\
-${conf}
+
+        # DNS-only VPN: only DNS queries go through the tunnel.
+        # Client traffic uses the ISP connection; IP is not masked.
+        local dns_only="${base_conf}
+AllowedIPs = ${WG_SERVER_IPV4}/32, ${WG_SERVER_IPV6%::*}::1/128"
+
+        # Full VPN: all traffic (IPv4 and IPv6) routes through the tunnel.
+        # Prevents DNS leaks and masks the client IP address.
+        local full_vpn="${base_conf}
 AllowedIPs = 0.0.0.0/0, ::/0"
 
-        output="${output}\
-From client ${i}'s WireGuard app, add a connection for one or both of the
-available VPN types by scanning the appropriate code(s) below:
+        output="${output}
+Client ${i} — scan one or both QR codes below:
 
-                            ⇒ DNS Only VPN ⇐
+                        >> DNS Only VPN <<
 $(echo "${dns_only}" | qrencode -t utf8)
-$(if ${print_conf}; then echo "${dns_only}"; fi)
+$(if "${print_conf}"; then echo "${dns_only}"; fi)
 
-                              ⇒ Full VPN ⇐
+                          >> Full VPN <<
 $(echo "${full_vpn}" | qrencode -t utf8)
-$(if ${print_conf}; then echo "${full_vpn}"; fi)
+$(if "${print_conf}"; then echo "${full_vpn}"; fi)
 "
+        # Add peer to server config
         wg0_conf="${wg0_conf}
 [Peer]
 PublicKey = ${cpbk}
 PresharedKey = ${psk}
 AllowedIPs = ${addrs}
 "
-done
+    done
+
     mkdir -p /etc/wireguard
     chmod 700 /etc/wireguard
-    echo -n "$wg0_conf" > /etc/wireguard/wg0.conf
+    printf '%s' "${wg0_conf}" > /etc/wireguard/wg0.conf
     chmod 600 /etc/wireguard/wg0.conf
-    sudo systemctl enable wg-quick@wg0.service
-    sudo systemctl daemon-reload
-    sudo systemctl start wg-quick@wg0
-    sudo systemctl restart wg-quick@wg0
-    echo -n "${output}"
+
+    systemctl enable wg-quick@wg0.service
+    systemctl daemon-reload
+    systemctl start wg-quick@wg0 || systemctl restart wg-quick@wg0
+
+    printf '%s' "${output}"
 }
 
+# -----------------------------------------------------------------------
+# Regen mode: called as regen-vpn-keys.sh to regenerate all keys
+# -----------------------------------------------------------------------
 nconfs="${1:-1}"
-if [[ -n ${nconfs//[0-9]/} || ${nconfs} -lt 1 ]]
-then
-    echo "Cannot create '${nconfs}' configs; specify integer >= 1."
+if [[ -n "${nconfs//[0-9]/}" ]] || [[ "${nconfs}" -lt 1 ]]; then
+    printf 'Cannot create "%s" configs; specify integer >= 1.\n' "${nconfs}"
     exit 1
 fi
-if [[ "$(basename "${0}")" == 'regen-vpn-keys.sh' ]]
-then
+
+if [[ "$(basename "${0}")" == 'regen-vpn-keys.sh' ]]; then
     wg_conf "${nconfs}"
-    # MotD, created when called as install script, contains old QR code
+    # Remove old motd QR codes; new ones are printed directly to terminal
     rm -f /etc/update-motd.d/99-getting-started
     exit 0
 fi
 
 
-echo "STEP 1: Install WireGuard & dependencies ..."
-export DEBIAN_FRONTEND=noninteractive
+# -----------------------------------------------------------------------
+# Install mode: full WireGuard install and first-boot configuration
+# -----------------------------------------------------------------------
+
+echo "STEP 1: Install WireGuard ..."
 apt-get -qqy update
 apt-get -qqy -o Dpkg::Options::="--force-confdef" \
              -o Dpkg::Options::="--force-confold" install \
-             qrencode \
-             wireguard \
-             wireguard-tools
+    qrencode \
+    wireguard \
+    wireguard-tools
 apt-get -qqy autoremove
 apt-get -qqy clean
-echo "WireGuard & dependency installation complete."
+echo "WireGuard installation complete."
 
 
-echo "STEP 2: Enable forwarding ..."
-for file in /etc/sysctl.conf /etc/sysctl.d/99-sysctl.conf
-do
-    sed -e 's/^#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/' \
-        -e 's/^#net.ipv6.conf.all.forwarding=1/net.ipv6.conf.all.forwarding=1/' \
-        -i "${file}"
-done
-sysctl -p
-echo "Forwarding enabled."
+echo "STEP 2: Open WireGuard port in ufw ..."
+ufw allow "${WG_PORT}/udp" comment 'WireGuard VPN'
+# Allow all traffic on the wg0 interface (VPN clients)
+ufw allow in on wg0
+echo "Firewall rules added."
 
-echo "STEP 3: Configure firewall ..."
-for cmd in iptables ip6tables
-do
-    "${cmd}" -A PREROUTING -i eth0 -p udp -m multiport --dports 123,1194 -j REDIRECT --to-ports 51820 -t nat
-    "${cmd}" -A INPUT -i eth0 -p udp -m udp --dport 51820 -j ACCEPT
-    "${cmd}" -A INPUT -i wg0 -j ACCEPT
-    "${cmd}" -A FORWARD -i wg0 -j ACCEPT
-    "${cmd}" -A POSTROUTING -o eth0 -j MASQUERADE -t nat
-done
-mkdir -p /etc/iptables
-iptables -Z -t nat
-iptables -Z
-iptables-save > /etc/iptables/rules.v4
-ip6tables -Z -t nat
-ip6tables -Z
-ip6tables-save > /etc/iptables/rules.v6
 
-echo "Firewall configuration complete."
-
-echo "STEP 4: Configure WireGuard ..."
-echo -n "#!/bin/sh
-cat <<EOF
-=========================================================================
-$(wg_conf "${nconfs}" false)
-
-                                    ❓
-             Can't scan? Multiple clients? Other questions?
-                  Run the command below for more info:
-
-                               cat README
-=========================================================================
-To delete this message of the day:
-    rm -rf \$(readlink -f \${0})
-EOF
-" > /etc/update-motd.d/99-getting-started
+echo "STEP 3: Configure WireGuard and generate QR codes ..."
+# Store QR codes in the motd so they appear on first SSH login.
+{
+    printf '#!/bin/sh\ncat <<'"'"'MOTD_EOF'"'"'\n'
+    printf '=========================================================================\n'
+    wg_conf "${nconfs}" false
+    printf '\n'
+    printf '                                ?\n'
+    printf '  Can'"'"'t scan? Multiple clients? Run: /root/regen-vpn-keys.sh <NUM>\n'
+    printf '=========================================================================\n'
+    printf 'MOTD_EOF\n'
+} > /etc/update-motd.d/99-getting-started
 chmod 700 /etc/update-motd.d/99-getting-started
-echo "Wireguard and MotD configuration complete."
+echo "WireGuard configuration complete."
 
 
-echo "STEP 5: Update README ..."
+echo "STEP 4: Update README ..."
 touch /root/README
-perl -C -Mutf8 -i -p0e \
-    's/^\n+█▀+\n█ WIREGUARD.*WIREGUARD █\n▄+█\n//sme' \
-    /root/README
+
 cat <<EOF >> /root/README
 
+=====================================
+ WIREGUARD VPN
+=====================================
 
-█▀▀▀▀▀▀▀▀▀▀
-█ WIREGUARD
+WireGuard is the VPN software. Donate: https://wireguard.com/donations
 
-WireGuard is the VPN software used. Consider donating at:
+Listen port: ${WG_PORT}
+Server IPv4: ${WG_SERVER_IPV4}/24
+Server IPv6: ${WG_SERVER_IPV6}/32
 
-                 wireguard.com/donations
-                 ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+Two VPN modes are available per client:
 
+  DNS Only VPN
+    Only DNS queries route through the tunnel. Ad blocking works;
+    the client IP is NOT masked. Use on trusted networks.
+    AllowedIPs = ${WG_SERVER_IPV4}/32, ${WG_SERVER_IPV6%::*}::1/128
 
-NB: If the server has a public IPv6 address, that address will be
-used in the client configs. The server's public IPv4 address is
-only set in the client configs if there is no public IPv6 address.
-If the IPv4 address is preferred (or required) by the client,
-simply update it in the corresponding client config manually.
+  Full VPN (recommended for untrusted networks)
+    All IPv4 and IPv6 traffic routes through the tunnel.
+    Prevents DNS leaks and masks the client IP.
+    AllowedIPs = 0.0.0.0/0, ::/0
 
-
-Have multiple clients / users?
-Can't scan QR codes on one or more clients?
-Need to regenerate keys for any reason?
-
-Run the following script to generate ALL new keys/configs:
-
+Regenerate all keys and configs:
     /root/regen-vpn-keys.sh <NUM_CLIENTS>
+    e.g.: /root/regen-vpn-keys.sh 3
 
-e.g.
-    ./regen-vpn-keys.sh 2
+WARNING: All clients must re-scan QR codes after key regeneration.
 
-WARNING: All peers (i.e. clients) will need to scan the new QR
-         codes or manually enter the new config info.
+Port alternatives (if ${WG_PORT} is blocked):
+    443/UDP  — set WG_PORT=443 before running regen-vpn-keys.sh
+    53/UDP   — use only if 443 is also blocked
 
+Pre-shared keys are generated per client for post-quantum protection.
 
-Why is there more than one QR code per client? Options ...
+IPv6 leak prevention:
+    The Full VPN config routes ::/0 through the tunnel, which prevents
+    IPv6 leaks. On the server, public IPv6 forwarding is enabled for
+    the tunnel. If your ISP does not support IPv6, the IPv6 WireGuard
+    subnet (${WG_NET_IPV6}) is still functional within the VPN.
 
-⇒ DNS Only VPN
-
-  Only the client's DNS traffic is routed over the VPN. This is
-  sufficient for Pi-Hole to do its job.
-
-  Client requests will show Carrier / ISP assigned IP. Therefore,
-  most sites / services will work normally.
-
-  Benefits: Faster than full VPN, generally works as expected
-  Use When: On a trusted network but still need Ad blocking
-
-⇒ Full VPN
-
-  All traffic is routed over the VPN.
-
-  Client requests will show Pi-Hole VPN server IP. Therefore,
-  some sites / services might not work or have more captchas.
-
-  Benefits: Increased privacy / security
-  Use When: On untrusted networks
-
-
-But my network blocks port 51820 ... are there other options?
-
-This server will also route the following UDP ports to WireGuard:
-• 1194 (OpenVPN): Try this first
-• 123  (NTP)    : If 1194 doesn't work, try 123
-
-WIREGUARD █
-▄▄▄▄▄▄▄▄▄▄█
 EOF
 echo "README update complete."
+
+echo "WireGuard setup complete."

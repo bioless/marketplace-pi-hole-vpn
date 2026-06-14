@@ -13,7 +13,40 @@ crash.log
 *.tfstate.backup
 *.lock.hcl
 .terraform
+terraform/.terraform/
 
 # Packer
 variables.pkr.hcl
 *.pkrvars.hcl
+
+# WireGuard key material — must never be committed
+*.key
+wg0.conf
+/etc/wireguard/
+
+# Pi-hole admin credentials — generated at first boot, never in git
+.pihole-admin-pass
+pihole-admin-pass
+
+# TLS certificates and private keys
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# PCAP captures
+*.pcap
+*.pcapng
+
+# Secrets / tokens
+.env
+.env.local
+*.token
+
+# Editor temp files
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
