@@ -12,9 +12,10 @@ If the argument is a path under `proposals/`, this is a promotion: read that pro
 Steps:
 1. Read `specs/TEMPLATE.md` and the existing specs in `specs/` to match the format and depth.
 2. Pick the next spec number (highest existing NNN plus one) and a short kebab-case name.
-3. Write `specs/NNN-<name>.md`, filling every section: context, goal, scope and non-goals, design, files to change, validation, failure modes, acceptance criteria, and a task checklist placeholder. The validation section must end in `./validate.sh` exit 0 plus at least one concrete feature-specific check with the exact command and expected output.
-4. Name any CLAUDE.md invariant the work must not break (admin UI on wg0 only, no hardcoded secrets, shellcheck clean, Pi-hole v6 pihole.toml only, no lighttpd, WireGuard PSK for all peers).
-5. Follow the repo writing style: no em dashes, never the word "ensure", active voice, tables over long prose.
+3. Write `specs/NNN-<name>.md`, filling every section: context, goal, scope and non-goals, design, files to change, validation, failure modes, acceptance criteria, and a task checklist placeholder. The validation section must end in the project's validation (per CLAUDE.md) at exit 0 plus at least one concrete feature-specific check with the exact command and expected output.
+3b. Populate the lifecycle metadata: stamp `Created` with today's date, leave `Modified`/`Commits`/`Sessions` empty (append-only lists filled as the spec lives), and on a promotion seed `Back refs` with the source proposal path. Leave `## Amendments` empty.
+4. Name any invariant in CLAUDE.md the work must not break (the "Read first: safety and intent" and "Do not" sections).
+5. Follow the writing style in CLAUDE.md (tables over long prose).
 
 Stop after writing the spec. Do not implement it. Report the file path and a one-paragraph summary for review.
 
